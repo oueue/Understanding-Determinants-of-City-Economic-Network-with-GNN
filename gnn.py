@@ -30,21 +30,16 @@ edge_index = edge_index.t()
 edge_attr = torch.tensor([5, 3, 4, 2, 1], dtype = torch.long)
 x = torch.tensor([[35, 21, 42, 52, 3],[12, 32, 32, 12, 43],[1, 3, 4, 3, 5], [4, 5, 3, 19, 5]], dtype = torch.float)
 data = Data(x = x, edge_index = edge_index, edge_attr = edge_attr)
-adj_mat = np.mat([[0, 5, 3, 2],
-                                [0, 0, 2, 0],
-                                [0, 0, 0, 0],
-                                [0, 0, 1, 0]])
 
 '''
 models
 '''
 class CustomConv(MessagePassing):
-    def __init__(self, in_channels, out_channels, data, adj_mat):
+    def __init__(self, in_channels, out_channels, data):
         super(CustomConv, self).__init__(aggr='add')
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.att = adj_mat
-        self.denom =self.att.sum(axis = 0)
+        self.att = edge_attr
         self.weight = Parameter(torch.Tensor(in_channels, out_channels))
         self.bias = Parameter(torch.Tensor(out_channels))
         self.reset_parameters()
@@ -56,20 +51,18 @@ class CustomConv(MessagePassing):
     def forward(self, x, edge_index,):
         # x has shape [N, in_channels]
         # edge_index has shape [2, E]
+        x = torch.mm(x, self.weight).view(-1, self.out_channels)
         edge_index, _ = remove_self_loops(edge_index)
         edge_index, _ = add_self_loops(edge_index,
-                                       num_nodes = x.size(self.node_dim))
-        x = torch.matmul(x, self.weight)
+                                       num_nodes = x.size(0))
         return self.propagate(edge_index, x = x)
 
     def message(self, edge_index_i, edge_index_j, x_i, x_j,):
         x_j = x_j.view(-1, self.out_channels) #reshape to (?, out_channels)
-        denom =  self.denom[0, edge_index_i]
-        alpha = np.exp(self.att[edge_index_j, edge_index_i])/ np.exp(denom)
+        alpha = self.att
         return x_j * alpha
 
     def update(self, aggr_out):
-        aggr_out = aggr_out.add(dim=1)
         aggr_out = aggr_out + self.bias
         return aggr_out
 
@@ -82,12 +75,11 @@ class CustomConv(MessagePassing):
 class CustomEncoder(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(CustomEncoder, self).__init__()
-        self.conv1 = CustomConv(in_channels, 2*out_channels, data, adj_mat)
-        self.conv2 = CustomConv(2*out_channels, out_channels, data, adj_mat)
+        self.conv = CustomConv(in_channels, out_channels, data)
 
     def forward(self, x, edge_index):
-        x = F.relu(self.conv1(x, edge_index))
-        return self.conv2(x, edge_index)
+        x = F.relu(self.conv(x, edge_index))
+        return x
 
 
 class CustomDecoder(nn.Module):
@@ -103,7 +95,7 @@ class CustomDecoder(nn.Module):
 class CustomGAE(torch.nn.Module):
     def __init__(self):
         super(CustomGAE, self).__init__()
-        self.encoder = CustomEncoder(5, 5) #in_channels, out_channels
+        self.encoder = CustomEncoder(5, 1) #in_channels, out_channels
         self.decoder = CustomDecoder()
         CustomGAE.reset_parameters(self)
 
