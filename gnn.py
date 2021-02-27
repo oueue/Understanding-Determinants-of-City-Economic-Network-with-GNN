@@ -30,7 +30,11 @@ edge_index = edge_index.t()
 edge_attr = torch.tensor([5, 3, 4, 2, 1], dtype = torch.long)
 x = torch.tensor([[35, 21, 42, 52, 3],[12, 32, 32, 12, 43],[1, 3, 4, 3, 5], [4, 5, 3, 19, 5]], dtype = torch.float)
 data = Data(x = x, edge_index = edge_index, edge_attr = edge_attr)
-
+a = torch.tensor(
+    [[0, 5, 3, 4],
+        [0, 0, 2, 0],
+        [0, 0, 0, 0],
+        [0, 0, 1, 0]])
 '''
 models
 '''
@@ -40,8 +44,8 @@ class CustomConv(MessagePassing):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.att = edge_attr
-        self.weight = Parameter(torch.Tensor(in_channels, out_channels))
-        self.bias = Parameter(torch.Tensor(out_channels))
+        self.weight = Parameter(torch.empty(in_channels, out_channels, dtype = torch.float, requires_grad = True))
+        self.bias = Parameter(torch.empty(out_channels, dtype = torch.float, requires_grad = True))
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -59,7 +63,7 @@ class CustomConv(MessagePassing):
 
     def message(self, edge_index_i, edge_index_j, x_i, x_j,):
         x_j = x_j.view(-1, self.out_channels) #reshape to (?, out_channels)
-        alpha = self.att
+        alpha = np.exp(self.att)
         return x_j * alpha
 
     def update(self, aggr_out):
@@ -83,12 +87,12 @@ class CustomEncoder(nn.Module):
 
 
 class CustomDecoder(nn.Module):
-    def forward(self, z, edge_index, sigmoid = True):
-        value = (z[edge_index[0]] * z[edge_index[1]]).sum(dim=1)
-        return torch.sigmoid(value) if sigmoid else value
-
-    def forward_all(self, z, sigmoid = True):
+    def forward(self, z, sigmoid = True):
+        #print('z')
+        #print(z)
         adj = torch.matmul(z, z.t())
+        #print('z*z.t = ')
+        #print(adj)
         return torch.sigmoid(adj) if sigmoid else adj
 
 
@@ -100,9 +104,8 @@ class CustomGAE(torch.nn.Module):
         CustomGAE.reset_parameters(self)
 
     def reset_parameters(self):
-        #reset(self.encoder)
+        glorot(self.encoder.conv.weight)
         #reset(self.decoder)
-        pass
 
     def encode(self, *args, **kwargs):
         return self.encoder(*args, **kwargs)
@@ -110,41 +113,40 @@ class CustomGAE(torch.nn.Module):
     def decode(self, *args, **kwargs):
         return self.decoder(*args, **kwargs)
 
-    def recon_loss(self, z, edge_index):
-        L = (1/2.0)*(x-self.decoder(z, edge_index, sigmoid = True))#correct?
-        return L
+    def recon_loss(self, z, a):
+        a_prime = self.decoder(z, sigmoid = False)
+        sub = torch.sub(a, a_prime)
+        L = (1/2.0)*(sub)
+        l = torch.mean(L)
+        l.requires_grad_(True)
+        return l
 
     def forward(self):
         pass
-
-    def test(self, z, edge_index):
-        y = z.new_ones(edge_index.size(1))
-        pred = self.decoder(z, edge_index, sigmoid=True)
-        y, pred = y.detach().cpu().numpy(), pred.detach().cpu().numpy()
-        return roc_auc_score(y, pred), average_precision_score(y, pred)
     
 '''
 test & output
 '''
 device = torch.device('cuda')
 model = CustomGAE()
-optimizer = torch.optim.Adam(model.parameters(), lr = 0.005, weight_decay = 1e-3)
+optimizer = torch.optim.Adam((model.encoder.conv.weight, model.encoder.conv.bias), lr = 0.01, weight_decay = 0)
 data= data.to(device)
-#adj_mat = adj_mat.to(device)
 
 #train
-for epoch in range(50):
-    model.train()
+for epoch in range(500):
+    model.eval()
     optimizer.zero_grad()
     out = model()
     z = model.encode(x, edge_index)
-    loss = model.recon_loss(z, edge_index)
+    loss = model.recon_loss(z, a)
     loss.backward()
     optimizer.step()
 
     #test
-    if (epoch+1) % 5 == 0:
-        model.eval()
-        with torch.no_grad():
-            z = model.encode(x, train_pos_edge_index)
-        print(model.test(z, pos_edge_index, neg_edge_index))
+    if (epoch+1) % 50 == 0:
+        print('loss')
+        print(loss.item())
+        print('weight')
+        print(model.encoder.conv.weight)
+        print('bias')
+        print(model.encoder.conv.bias)
